@@ -1,0 +1,359 @@
+import { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Bell, Camera, CheckCheck, Menu, User, X } from 'lucide-react';
+import { useApp } from '../context/useApp';
+import ConfirmModal from './ConfirmModal';
+
+export default function Header({ onToggleMobileMenu }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const {
+    session,
+    updateCurrentProfile,
+    adminNotifications,
+    markAdminNotificationRead,
+    markAllAdminNotificationsRead
+  } = useApp();
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [fullname, setFullname] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [avatarFile, setAvatarFile] = useState(null);
+  const [avatarPreview, setAvatarPreview] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Confirmation Modal State
+  const [confirmModal, setConfirmModal] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmText: 'Confirm',
+    cancelText: 'Cancel',
+    variant: 'primary',
+    isProcessing: false,
+    onConfirm: () => {},
+  });
+
+  const confirmAction = ({ title, message, confirmText = 'Confirm', variant = 'primary', action }) => {
+    setConfirmModal({
+      isOpen: true,
+      title,
+      message,
+      confirmText,
+      cancelText: 'Cancel',
+      variant,
+      isProcessing: false,
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, isProcessing: true }));
+        try {
+          await action();
+          setConfirmModal((prev) => ({ ...prev, isOpen: false, isProcessing: false }));
+        } catch (err) {
+          setConfirmModal((prev) => ({ ...prev, isProcessing: false }));
+          alert(err.message || 'Operation failed.');
+        }
+      },
+    });
+  };
+
+  const getTitle = (path) => {
+    switch (path) {
+      case '/dashboard':
+        return 'Dashboard';
+      case '/reports':
+        return 'All Reports';
+      case '/archive':
+        return 'Report Archive';
+      case '/map':
+        return 'Reports Map View';
+      case '/residents':
+        return 'Users Management';
+      case '/notifications':
+        return 'Send Notification';
+      case '/hotlines':
+        return 'Hotline Management';
+      default:
+        return 'Drainage Monitoring System';
+    }
+  };
+
+  const getSubtitle = (path) => {
+    switch (path) {
+      case '/dashboard':
+        return 'Welcome Back, Admin!';
+      case '/reports':
+        return 'View and manage all submitted reports';
+      case '/archive':
+        return 'View and manage all your previously submitted reports';
+      case '/map':
+        return 'Visualize report locations on the map';
+      case '/residents':
+        return 'Manage registered users and account status';
+      case '/notifications':
+        return 'Send notifications to residents';
+      case '/hotlines':
+        return 'Manage emergency and community hotline numbers';
+      default:
+        return '';
+    }
+  };
+
+  const openProfile = () => {
+    setFullname(session?.user?.fullname || '');
+    setPhone(session?.user?.phone || '');
+    setEmail(session?.user?.email || '');
+    setAvatarFile(null);
+    setAvatarPreview(session?.user?.avatarUrl || '');
+    setIsProfileOpen(true);
+  };
+
+  const handleAvatarChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
+  };
+
+  const handleProfileSubmit = (event) => {
+    event.preventDefault();
+    confirmAction({
+      title: 'Update Profile',
+      message: 'Are you sure you want to save these profile changes?',
+      confirmText: 'Save Changes',
+      variant: 'primary',
+      action: async () => {
+        setIsSaving(true);
+        try {
+          await updateCurrentProfile({
+            fullname,
+            phone,
+            email: session?.user?.email || email,
+            avatarFile,
+          });
+          setIsProfileOpen(false);
+        } finally {
+          setIsSaving(false);
+        }
+      },
+    });
+  };
+
+  const unreadCount = (adminNotifications || []).filter((item) => !item.isRead).length;
+  const visibleNotifications = (adminNotifications || []).slice(0, 8);
+
+  const handleOpenNotification = async (notification) => {
+    try {
+      if (!notification.isRead) {
+        await markAdminNotificationRead(notification.id);
+      }
+      setIsNotificationsOpen(false);
+      if (notification.reportId) {
+        navigate(`/reports?focus=${notification.reportId}&status=Pending`);
+      } else if (notification.userId || notification.type === 'new_user') {
+        navigate(`/residents?focus=${notification.userId || ''}`);
+      } else if (notification.type === 'broadcast_sent') {
+        navigate('/notifications');
+      }
+    } catch (error) {
+      alert(error.message || 'Unable to open notification.');
+    }
+  };
+
+  const handleMarkAllRead = () => {
+    if (unreadCount === 0) return;
+    confirmAction({
+      title: 'Mark All as Read',
+      message: `Do you want to mark all ${unreadCount} unread administrative notification${unreadCount > 1 ? 's' : ''} as read?`,
+      confirmText: 'Mark All Read',
+      variant: 'primary',
+      action: async () => {
+        await markAllAdminNotificationsRead();
+      },
+    });
+  };
+
+  return (
+    <header className="app-header">
+      <div className="header-left">
+        {onToggleMobileMenu && (
+          <button
+            type="button"
+            className="mobile-menu-toggle-btn"
+            onClick={onToggleMobileMenu}
+            aria-label="Toggle navigation menu"
+          >
+            <Menu size={24} />
+          </button>
+        )}
+        <div className="header-title-group">
+          <h2 className="header-title">{getTitle(location.pathname)}</h2>
+          <p className="header-subtitle">{getSubtitle(location.pathname)}</p>
+        </div>
+      </div>
+      <div className="header-actions">
+        <div className="admin-notification-wrap">
+          <button
+            type="button"
+            className={`admin-notification-btn ${unreadCount > 0 ? 'has-unread' : ''}`}
+            onClick={() => setIsNotificationsOpen((current) => !current)}
+            title="Notifications"
+            aria-label="Notifications"
+          >
+            <Bell size={21} />
+            {unreadCount > 0 && (
+              <span className="admin-notification-badge">
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </span>
+            )}
+          </button>
+
+          {isNotificationsOpen && (
+            <div className="admin-notification-menu">
+              <div className="admin-notification-menu-header">
+                <div>
+                  <h3>Notifications</h3>
+                  <p>{unreadCount} unread notification{unreadCount === 1 ? '' : 's'}</p>
+                </div>
+                {unreadCount > 0 && (
+                  <button type="button" onClick={handleMarkAllRead}>
+                    <CheckCheck size={15} />
+                    <span>Read all</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="admin-notification-list">
+                {visibleNotifications.length > 0 ? (
+                  visibleNotifications.map((notification) => (
+                    <button
+                      type="button"
+                      key={notification.id}
+                      className={`admin-notification-item ${notification.isRead ? 'read' : 'unread'}`}
+                      onClick={() => handleOpenNotification(notification)}
+                    >
+                      <span className="admin-notification-dot" />
+                      <span className="admin-notification-body">
+                        <span className="admin-notification-header-line">
+                          <strong>{notification.title}</strong>
+                          <span className={`admin-notification-pill ${
+                            notification.type === 'new_user' ? 'user' :
+                            notification.type === 'broadcast_sent' ? 'broadcast' : 'report'
+                          }`}>
+                            {notification.type === 'new_user' ? 'Resident' :
+                             notification.type === 'broadcast_sent' ? 'Sent' : 'Report'}
+                          </span>
+                        </span>
+                        <span>{notification.message}</span>
+                        <small>{notification.createdAtLabel}</small>
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="admin-notification-empty">
+                    No new notifications.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div
+          className="header-user"
+          onClick={openProfile}
+          role="button"
+          tabIndex={0}
+          title="Edit Profile"
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openProfile();
+            }
+          }}
+        >
+          <div className="header-avatar">
+            {session?.user?.avatarUrl ? (
+              <img src={session.user.avatarUrl} alt="" />
+            ) : (
+              <User size={26} />
+            )}
+          </div>
+          <div className="header-user-info">
+            <span className="header-user-name">
+              {session?.user?.fullname || session?.user?.email || 'Admin'}
+            </span>
+            <span className="header-user-role">
+              {session?.user?.role === 'super_admin' ? 'Super Admin' : 'Administrator'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {isProfileOpen && (
+        <div className="modal-overlay" onClick={() => !isSaving && setIsProfileOpen(false)}>
+          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Edit Admin Profile</h2>
+              <button className="modal-close" onClick={() => setIsProfileOpen(false)} disabled={isSaving}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleProfileSubmit}>
+              <label className="admin-avatar-picker">
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleAvatarChange} />
+                <span className="admin-avatar-preview">
+                  {avatarPreview ? <img src={avatarPreview} alt="" /> : <User size={38} />}
+                </span>
+                <span className="admin-avatar-camera">
+                  <Camera size={16} />
+                </span>
+              </label>
+
+              <div className="form-group">
+                <label className="form-label">Full Name</label>
+                <input className="form-input" value={fullname} onChange={(e) => setFullname(e.target.value)} required />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Email</label>
+                <input
+                  className="form-input"
+                  type="email"
+                  value={email}
+                  disabled
+                  readOnly
+                  title="Admin email addresses cannot be changed from the profile editor."
+                />
+                <p className="form-help-text">Email cannot be edited for admin accounts.</p>
+              </div>
+
+              <div className="modal-actions">
+                <button type="button" className="btn-secondary" onClick={() => setIsProfileOpen(false)} disabled={isSaving}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn-primary" disabled={isSaving}>
+                  {isSaving ? 'Saving...' : 'Save Profile'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Reusable Confirm Modal */}
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        cancelText={confirmModal.cancelText}
+        variant={confirmModal.variant}
+        isProcessing={confirmModal.isProcessing}
+        onConfirm={confirmModal.onConfirm}
+        onCancel={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))}
+      />
+    </header>
+  );
+}

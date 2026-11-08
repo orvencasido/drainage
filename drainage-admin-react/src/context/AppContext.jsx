@@ -1,0 +1,1132 @@
+import { useCallback, useEffect, useState } from 'react';
+import { AppContext } from './app-context';
+import { supabase } from '../lib/supabaseClient';
+
+const ADMIN_ROLES = new Set(['admin', 'super_admin']);
+
+function mapUserProfile(profile) {
+  return {
+    id: profile.id,
+    name: profile.fullname,
+    contact: profile.phone || '',
+    email: profile.email,
+    avatarUrl: profile.avatar_url || '',
+    idCardUrl: profile.id_card_url || '',
+    idCardFrontUrl: profile.id_card_front_url || profile.id_card_url || '',
+    idCardBackUrl: profile.id_card_back_url || '',
+    role: profile.role,
+    status: profile.status
+  };
+}
+
+function statusClass(status) {
+  return `${status || ''}`.toLowerCase().replace(/\s+/g, '');
+}
+
+function formatDate(value) {
+  if (!value) return 'N/A';
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(new Date(value));
+}
+
+function mapReport(report) {
+  const resident = report.users || {};
+  const id = report.id;
+
+  return {
+    id,
+    displayId: `DR-${id.slice(0, 8).toUpperCase()}`,
+    issue: report.title || 'Drainage Issue',
+    title: report.title || 'Drainage Issue',
+    location: report.location_label || 'Pinned location',
+    status: report.status || 'Pending',
+    statusClass: statusClass(report.status),
+    priority: report.priority || '',
+    dateSubmitted: formatDate(report.created_at),
+    submittedBy: resident.fullname || 'Unknown resident',
+    contactNo: resident.phone || '',
+    residentEmail: resident.email || '',
+    description: report.description || '',
+    imageUrl: report.image_url || '',
+    latitude: typeof report.latitude === 'number' ? report.latitude : Number(report.latitude),
+    longitude: typeof report.longitude === 'number' ? report.longitude : Number(report.longitude),
+    createdAt: report.created_at,
+    updatedAt: report.updated_at
+  };
+}
+
+function mapNotification(notification) {
+  return {
+    id: notification.id,
+    userId: notification.user_id,
+    reportId: notification.report_id,
+    title: notification.title || 'Notification',
+    message: notification.message || '',
+    isRead: Boolean(notification.is_read),
+    sentBy: notification.sent_by,
+    createdAt: notification.created_at
+  };
+}
+
+function mapReportLog(log) {
+  return {
+    id: log.id,
+    reportId: log.report_id,
+    oldStatus: log.old_status,
+    newStatus: log.new_status || 'Pending',
+    remarks: log.remarks || '',
+    changedBy: log.changed_by,
+    createdAt: log.created_at,
+    createdAtLabel: formatDate(log.created_at)
+  };
+}
+
+function mapReportRemark(remark) {
+  const admin = remark.users || {};
+
+  return {
+    id: remark.id,
+    reportId: remark.report_id,
+    adminId: remark.admin_id,
+    adminName: admin.fullname || admin.email || 'Admin',
+    remark: remark.remark || '',
+    createdAt: remark.created_at,
+    createdAtLabel: formatDate(remark.created_at)
+  };
+}
+
+function mapAdminNotification(notification) {
+  return {
+    id: notification.id,
+    reportId: notification.report_id,
+    userId: notification.user_id || null,
+    title: notification.title || 'Notification',
+    message: notification.message || '',
+    type: notification.type || 'new_report',
+    isRead: Boolean(notification.is_read),
+    createdAt: notification.created_at,
+    readAt: notification.read_at,
+    readBy: notification.read_by,
+    createdAtLabel: formatDate(notification.created_at)
+  };
+}
+
+function mapHotline(hotline) {
+  return {
+    id: hotline.id,
+    name: hotline.name || '',
+    phoneNumber: hotline.phone_number || '',
+    description: hotline.description || '',
+    category: hotline.category || '',
+    isActive: hotline.is_active !== false,
+    sortOrder: Number(hotline.sort_order) || 0,
+    createdAt: hotline.created_at,
+    updatedAt: hotline.updated_at
+  };
+}
+
+function buildSession(authSession, profile) {
+  if (!authSession?.user || !profile) return null;
+
+  return {
+    accessToken: authSession.access_token,
+    user: {
+      id: authSession.user.id,
+      email: authSession.user.email,
+      fullname: profile.fullname,
+      phone: profile.phone,
+      avatarUrl: profile.avatar_url || '',
+      role: profile.role,
+      status: profile.status
+    }
+  };
+}
+
+export function AppProvider({ children }) {
+  const [reports, setReports] = useState([]);
+  const [residents, setResidents] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [adminNotifications, setAdminNotifications] = useState([]);
+  const [hotlines, setHotlines] = useState([]);
+  const [reportLogs, setReportLogs] = useState([]);
+  const [reportRemarks, setReportRemarks] = useState([]);
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id,email,fullname,phone,avatar_url,id_card_url,id_card_front_url,id_card_back_url,role,status,created_at')
+        .in('role', ['resident', 'admin', 'super_admin'])
+        .order('created_at', { ascending: false });
+
+      if (usersError) throw usersError;
+      setResidents((users || []).map(mapUserProfile));
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load users.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadReports = useCallback(async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const { data: reportRows, error: reportsError } = await supabase
+        .from('reports')
+        .select(`
+          id,
+          user_id,
+          title,
+          description,
+          image_url,
+          latitude,
+          longitude,
+          location_label,
+          status,
+          priority,
+          created_at,
+          updated_at,
+          users:user_id (
+            fullname,
+            phone,
+            email,
+            avatar_url
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      if (reportsError) throw reportsError;
+      setReports((reportRows || []).map(mapReport));
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load reports.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadNotifications = useCallback(async () => {
+    try {
+      const { data: notificationRows, error: notificationsError } = await supabase
+        .from('notifications')
+        .select('id,user_id,report_id,title,message,is_read,sent_by,created_at')
+        .order('created_at', { ascending: false });
+
+      if (notificationsError) throw notificationsError;
+      setNotifications((notificationRows || []).map(mapNotification));
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load notifications.');
+    }
+  }, []);
+
+  const loadAdminNotifications = useCallback(async () => {
+    try {
+      const { data: notificationRows, error: notificationsError } = await supabase
+        .from('admin_notifications')
+        .select('id,report_id,user_id,title,message,type,is_read,created_at,read_at,read_by')
+        .order('created_at', { ascending: false });
+
+      if (notificationsError) throw notificationsError;
+      setAdminNotifications((notificationRows || []).map(mapAdminNotification));
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load admin notifications.');
+    }
+  }, []);
+
+  const loadHotlines = useCallback(async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const { data: hotlineRows, error: hotlinesError } = await supabase
+        .from('hotlines')
+        .select('id,name,phone_number,description,category,is_active,sort_order,created_at,updated_at')
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true });
+
+      if (hotlinesError) throw hotlinesError;
+      setHotlines((hotlineRows || []).map(mapHotline));
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load hotlines.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadReportLogs = useCallback(async () => {
+    try {
+      const { data: logRows, error: logsError } = await supabase
+        .from('report_logs')
+        .select('id,report_id,old_status,new_status,changed_by,remarks,created_at')
+        .order('created_at', { ascending: false });
+
+      if (logsError) throw logsError;
+      setReportLogs((logRows || []).map(mapReportLog));
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load report timeline.');
+    }
+  }, []);
+
+  const loadReportRemarks = useCallback(async () => {
+    try {
+      const { data: remarkRows, error: remarksError } = await supabase
+        .from('admin_report_remarks')
+        .select(`
+          id,
+          report_id,
+          admin_id,
+          remark,
+          created_at,
+          users:admin_id (
+            fullname,
+            email
+          )
+        `)
+        .order('created_at', { ascending: true });
+
+      if (remarksError) throw remarksError;
+      setReportRemarks((remarkRows || []).map(mapReportRemark));
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load report remarks.');
+    }
+  }, []);
+
+  const loadDashboardData = useCallback(async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const [
+        usersResult,
+        reportsResult,
+        notificationsResult,
+        logsResult,
+        remarksResult,
+        adminNotificationsResult,
+        hotlinesResult
+      ] = await Promise.all([
+        supabase
+          .from('users')
+          .select('id,email,fullname,phone,avatar_url,id_card_url,id_card_front_url,id_card_back_url,role,status,created_at')
+          .in('role', ['resident', 'admin', 'super_admin'])
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('reports')
+          .select(`
+            id,
+            user_id,
+            title,
+            description,
+            image_url,
+            latitude,
+            longitude,
+            location_label,
+            status,
+            priority,
+            created_at,
+            updated_at,
+            users:user_id (
+              fullname,
+              phone,
+              email,
+              avatar_url
+            )
+          `)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('notifications')
+          .select('id,user_id,report_id,title,message,is_read,sent_by,created_at')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('report_logs')
+          .select('id,report_id,old_status,new_status,changed_by,remarks,created_at')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('admin_report_remarks')
+          .select(`
+            id,
+            report_id,
+            admin_id,
+            remark,
+            created_at,
+            users:admin_id (
+              fullname,
+              email
+            )
+          `)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('admin_notifications')
+          .select('id,report_id,user_id,title,message,type,is_read,created_at,read_at,read_by')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('hotlines')
+          .select('id,name,phone_number,description,category,is_active,sort_order,created_at,updated_at')
+          .order('sort_order', { ascending: true })
+          .order('name', { ascending: true })
+      ]);
+
+      if (usersResult.error) throw usersResult.error;
+      if (reportsResult.error) throw reportsResult.error;
+      if (notificationsResult.error) throw notificationsResult.error;
+      if (logsResult.error) throw logsResult.error;
+      if (remarksResult.error) throw remarksResult.error;
+      if (adminNotificationsResult.error) throw adminNotificationsResult.error;
+      if (hotlinesResult.error) throw hotlinesResult.error;
+
+      setResidents((usersResult.data || []).map(mapUserProfile));
+      setReports((reportsResult.data || []).map(mapReport));
+      setNotifications((notificationsResult.data || []).map(mapNotification));
+      setAdminNotifications((adminNotificationsResult.data || []).map(mapAdminNotification));
+      setHotlines((hotlinesResult.data || []).map(mapHotline));
+      setReportLogs((logsResult.data || []).map(mapReportLog));
+      setReportRemarks((remarksResult.data || []).map(mapReportRemark).reverse());
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load dashboard data.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadAdminSession = useCallback(async (authSession) => {
+    if (!authSession?.user) {
+      setSession(null);
+      return null;
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('users')
+      .select('id,email,fullname,phone,avatar_url,role,status')
+      .eq('id', authSession.user.id)
+      .single();
+
+    if (profileError || !profile) {
+      await supabase.auth.signOut();
+      setSession(null);
+      throw new Error('Unable to load your account profile.');
+    }
+
+    if (!ADMIN_ROLES.has(profile.role)) {
+      await supabase.auth.signOut();
+      setSession(null);
+      throw new Error('Resident accounts cannot access the admin dashboard.');
+    }
+
+    if (profile.status !== 'Active') {
+      await supabase.auth.signOut();
+      setSession(null);
+      throw new Error('This admin account is disabled.');
+    }
+
+    const nextSession = buildSession(authSession, profile);
+    setSession(nextSession);
+    await loadDashboardData();
+    return nextSession;
+  }, [loadDashboardData]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const initializeSession = async () => {
+      try {
+        const { data, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+        if (isMounted && data.session) {
+          await loadAdminSession(data.session);
+        }
+      } catch (loadError) {
+        if (isMounted) setError(loadError.message || 'Unable to load session.');
+      } finally {
+        if (isMounted) setAuthLoading(false);
+      }
+    };
+
+    initializeSession();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, authSession) => {
+      if (!isMounted) return;
+      if (!authSession) {
+        setSession(null);
+        return;
+      }
+
+      loadAdminSession(authSession).catch((loadError) => {
+        if (isMounted) setError(loadError.message || 'Unable to load session.');
+      });
+    });
+
+    return () => {
+      isMounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, [loadAdminSession]);
+
+  const refreshData = useCallback(async () => {
+    if (!session?.user) return;
+    await loadDashboardData();
+  }, [loadDashboardData, session?.user]);
+
+  useEffect(() => {
+    if (!session?.user) return undefined;
+
+    const channel = supabase
+      .channel('admin-realtime-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reports' },
+        () => {
+          loadReports();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        () => {
+          loadUsers();
+          loadReports();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications' },
+        () => {
+          loadNotifications();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'report_logs' },
+        () => {
+          loadReports();
+          loadReportLogs();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_report_remarks' },
+        () => {
+          loadReportRemarks();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'admin_notifications' },
+        () => {
+          loadAdminNotifications();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'hotlines' },
+        () => {
+          loadHotlines();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [loadAdminNotifications, loadHotlines, loadNotifications, loadReportLogs, loadReportRemarks, loadReports, loadUsers, session?.user]);
+
+  const signIn = async (email, password) => {
+    if (!email.trim() || !password) {
+      throw new Error('Email and password are required.');
+    }
+
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password
+    });
+
+    if (signInError) throw signInError;
+    return loadAdminSession(data.session);
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setReports([]);
+    setResidents([]);
+    setNotifications([]);
+    setAdminNotifications([]);
+    setHotlines([]);
+    setReportLogs([]);
+    setReportRemarks([]);
+  };
+
+  const resetPassword = async (email) => {
+    if (!email.trim()) {
+      throw new Error('Email is required.');
+    }
+
+    const defaultSiteUrl =
+      typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? window.location.origin
+        : 'https://drainalert.site';
+    const siteUrl = import.meta.env.VITE_SITE_URL || defaultSiteUrl;
+    const redirectUrl = `${siteUrl}/reset-password`;
+
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: redirectUrl,
+    });
+    if (resetError) throw resetError;
+  };
+
+  const updatePassword = async (newPassword) => {
+    if (!newPassword || newPassword.length < 8) {
+      throw new Error('Password must be at least 8 characters long.');
+    }
+
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+    if (updateError) throw updateError;
+  };
+
+  const verifyOtpAndResetPassword = async ({ email, token, newPassword }) => {
+    if (!email?.trim()) throw new Error('Email is required.');
+    if (!token?.trim()) throw new Error('Verification code is required.');
+    if (!newPassword || newPassword.length < 8) {
+      throw new Error('Password must be at least 8 characters long.');
+    }
+
+    const { error: verifyError } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token: token.trim(),
+      type: 'recovery',
+    });
+    if (verifyError) throw verifyError;
+
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+    if (updateError) throw updateError;
+
+    // Sign out from temporary recovery session so user can log in cleanly
+    await supabase.auth.signOut();
+  };
+
+  const updateCurrentProfile = async ({ fullname, phone, avatarFile }) => {
+    if (!session?.user) throw new Error('No authenticated user.');
+
+    let avatarUrl = session.user.avatarUrl || '';
+
+    if (avatarFile) {
+      const extension = avatarFile.name.split('.').pop()?.toLowerCase() || 'jpg';
+      const safeExtension = ['jpg', 'jpeg', 'png', 'webp'].includes(extension) ? extension : 'jpg';
+      const path = `${session.user.id}/avatar-${Date.now()}.${safeExtension}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(path, avatarFile, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+      avatarUrl = data.publicUrl;
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('users')
+      .update({
+        email: session.user.email,
+        fullname: fullname.trim(),
+        phone: phone.trim(),
+        avatar_url: avatarUrl
+      })
+      .eq('id', session.user.id)
+      .select('id,email,fullname,phone,avatar_url,role,status')
+      .single();
+
+    if (profileError) throw profileError;
+
+    setSession((currentSession) =>
+      currentSession
+        ? {
+            ...currentSession,
+            user: {
+              ...currentSession.user,
+              email: profile.email,
+              fullname: profile.fullname,
+              phone: profile.phone,
+              avatarUrl: profile.avatar_url || ''
+            }
+          }
+        : currentSession
+    );
+
+    await loadUsers();
+  };
+
+  const updateReportDetails = async (id, newStatus, newRemarks, priority = undefined) => {
+    const rpcName = priority === undefined
+      ? 'update_report_status'
+      : 'update_report_admin_fields';
+    const rpcArgs = priority === undefined
+      ? {
+          p_report_id: id,
+          p_new_status: newStatus,
+          p_remarks: newRemarks || null
+        }
+      : {
+          p_report_id: id,
+          p_new_status: newStatus,
+          p_remarks: newRemarks || null,
+          p_priority: priority || null
+        };
+
+    const { data, error: updateError } = await supabase.rpc(rpcName, rpcArgs);
+
+    if (updateError) throw updateError;
+
+    const updatedStatus = data?.status || newStatus;
+    const nowIso = new Date().toISOString();
+
+    setReports((prevReports) =>
+      prevReports.map((report) =>
+        report.id === id
+          ? {
+              ...report,
+              status: updatedStatus,
+              statusClass: statusClass(updatedStatus),
+              remarks: newRemarks,
+              priority: priority !== undefined ? priority : report.priority,
+              updatedAt: nowIso
+            }
+          : report
+      )
+    );
+
+    setReportLogs((prevLogs) => [
+      {
+        id: `optimistic-${Date.now()}`,
+        reportId: id,
+        oldStatus: null,
+        newStatus: updatedStatus,
+        remarks: newRemarks || '',
+        changedBy: session?.user?.id || '',
+        createdAt: nowIso,
+        createdAtLabel: formatDate(nowIso)
+      },
+      ...prevLogs
+    ]);
+
+    await Promise.all([loadReports(), loadReportLogs()]);
+  };
+
+  const markAdminNotificationRead = async (id) => {
+    const { data, error: readError } = await supabase.rpc('mark_admin_notification_read', {
+      p_notification_id: id
+    });
+
+    if (readError) throw readError;
+
+    const mappedNotification = data ? mapAdminNotification(data) : null;
+    if (mappedNotification) {
+      setAdminNotifications((prevNotifications) =>
+        prevNotifications.map((notification) =>
+          notification.id === id ? mappedNotification : notification
+        )
+      );
+    }
+
+    return mappedNotification;
+  };
+
+  const markAllAdminNotificationsRead = async () => {
+    const { error: readError } = await supabase.rpc('mark_all_admin_notifications_read');
+    if (readError) throw readError;
+    await loadAdminNotifications();
+  };
+
+  const saveHotline = async (hotline) => {
+    if (!session?.user) throw new Error('No authenticated admin session.');
+
+    const row = {
+      name: hotline.name.trim(),
+      phone_number: hotline.phoneNumber.trim(),
+      description: hotline.description?.trim() || null,
+      category: hotline.category?.trim() || null,
+      is_active: hotline.isActive !== false,
+      sort_order: Number(hotline.sortOrder) || 0,
+      updated_by: session.user.id
+    };
+
+    if (!row.name || !row.phone_number) {
+      throw new Error('Hotline name and phone number are required.');
+    }
+
+    if (hotline.id) {
+      const { data, error: updateError } = await supabase
+        .from('hotlines')
+        .update(row)
+        .eq('id', hotline.id)
+        .select('id,name,phone_number,description,category,is_active,sort_order,created_at,updated_at')
+        .single();
+
+      if (updateError) throw updateError;
+      const mappedHotline = mapHotline(data);
+      setHotlines((prevHotlines) =>
+        prevHotlines.map((item) => (item.id === mappedHotline.id ? mappedHotline : item))
+      );
+      await loadHotlines();
+      return mappedHotline;
+    }
+
+    const { data, error: insertError } = await supabase
+      .from('hotlines')
+      .insert({
+        ...row,
+        created_by: session.user.id
+      })
+      .select('id,name,phone_number,description,category,is_active,sort_order,created_at,updated_at')
+      .single();
+
+    if (insertError) throw insertError;
+    const mappedHotline = mapHotline(data);
+    setHotlines((prevHotlines) => [...prevHotlines, mappedHotline]);
+    await loadHotlines();
+    return mappedHotline;
+  };
+
+  const deleteHotline = async (id) => {
+    const { error: deleteError } = await supabase
+      .from('hotlines')
+      .delete()
+      .eq('id', id);
+
+    if (deleteError) throw deleteError;
+
+    setHotlines((prevHotlines) => prevHotlines.filter((hotline) => hotline.id !== id));
+    await loadHotlines();
+  };
+
+  const deleteReport = async (id) => {
+    if (session?.user?.role !== 'super_admin') {
+      throw new Error('Only a super admin can delete reports.');
+    }
+
+    const { error: deleteError } = await supabase
+      .from('reports')
+      .delete()
+      .eq('id', id);
+
+    if (deleteError) throw deleteError;
+
+    setReports((prevReports) => prevReports.filter((report) => report.id !== id));
+    setReportLogs((prevLogs) => prevLogs.filter((log) => log.reportId !== id));
+    setReportRemarks((prevRemarks) =>
+      prevRemarks.filter((remark) => remark.reportId !== id)
+    );
+    setNotifications((prevNotifications) =>
+      prevNotifications.filter((notification) => notification.reportId !== id)
+    );
+    setAdminNotifications((prevNotifications) =>
+      prevNotifications.filter((notification) => notification.reportId !== id)
+    );
+
+    await Promise.all([
+      loadReports(),
+      loadReportLogs(),
+      loadReportRemarks(),
+      loadNotifications(),
+      loadAdminNotifications()
+    ]);
+  };
+
+  const addReportRemark = async (reportId, remark) => {
+    if (!session?.user) throw new Error('No authenticated admin session.');
+
+    const cleanRemark = `${remark || ''}`.trim();
+    if (!cleanRemark) {
+      throw new Error('Please enter a remark.');
+    }
+
+    const { data, error: remarkError } = await supabase
+      .from('admin_report_remarks')
+      .insert({
+        report_id: reportId,
+        admin_id: session.user.id,
+        remark: cleanRemark
+      })
+      .select(`
+        id,
+        report_id,
+        admin_id,
+        remark,
+        created_at,
+        users:admin_id (
+          fullname,
+          email
+        )
+      `)
+      .single();
+
+    if (remarkError) throw remarkError;
+
+    const mappedRemark = mapReportRemark(data);
+    setReportRemarks((prevRemarks) => [...prevRemarks, mappedRemark]);
+    return mappedRemark;
+  };
+
+  const uploadAdminResidentId = async (file, side) => {
+    if (!file || !session?.user) return null;
+
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+    const safeExt = ['jpg', 'jpeg', 'png', 'webp'].includes(ext) ? ext : 'jpg';
+    const fileName = `${session.user.id}/admin-created-${side}-${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${safeExt}`;
+
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('resident-ids')
+      .upload(fileName, file, { upsert: true });
+
+    if (uploadError) {
+      throw new Error(`Failed to upload ${side} valid ID photo: ${uploadError.message}`);
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from('resident-ids')
+      .getPublicUrl(uploadData.path);
+
+    return publicUrlData?.publicUrl || null;
+  };
+
+  const createUser = async ({
+    name,
+    contact,
+    email,
+    password,
+    role,
+    idCardFile,
+    idCardFrontFile,
+    idCardBackFile
+  }) => {
+    const requestedRole = role || 'resident';
+
+    if (requestedRole === 'admin' && session?.user?.role !== 'super_admin') {
+      throw new Error('Only a super admin can create admin accounts.');
+    }
+
+    const uploadedFrontUrl = await uploadAdminResidentId(idCardFrontFile || idCardFile, 'front');
+    const uploadedBackUrl = await uploadAdminResidentId(idCardBackFile, 'back');
+
+    const { data, error: createError } = await supabase.functions.invoke('create-user', {
+      body: {
+        fullname: name,
+        phone: contact,
+        email,
+        password,
+        role: requestedRole,
+        id_card_url: uploadedFrontUrl,
+        id_card_front_url: uploadedFrontUrl,
+        id_card_back_url: uploadedBackUrl
+      }
+    });
+
+    if (createError) throw createError;
+    if (data?.error) throw new Error(data.error);
+
+    await refreshData();
+    return data?.user;
+  };
+
+  const addResident = async (resident) => createUser({ ...resident, role: 'resident' });
+
+  const updateUserStatus = async (id, status) => {
+    const targetUser = residents.find((user) => user.id === id);
+
+    if (session?.user?.role === 'admin' && targetUser?.role !== 'resident') {
+      throw new Error('Regular admins can only modify resident accounts.');
+    }
+
+    const { data, error: statusError } = await supabase.functions.invoke('set-user-status', {
+      body: {
+        user_id: id,
+        status
+      }
+    });
+
+    if (statusError) throw statusError;
+    if (data?.error) throw new Error(data.error);
+
+    if (status === 'Active' && targetUser?.status === 'Pending') {
+      try {
+        await supabase.from('notifications').insert({
+          user_id: id,
+          title: 'Account Verified',
+          message: 'Your resident account registration has been verified by Barangay Soledad admins. You can now submit drainage issue reports!',
+          is_read: false,
+          sent_by: session?.user?.id || null
+        });
+      } catch (notifErr) {
+        console.warn('Failed to send verification notification:', notifErr);
+      }
+    }
+
+    setResidents((prevUsers) =>
+      prevUsers.map((user) => (user.id === id ? { ...user, status } : user))
+    );
+
+    await refreshData();
+    return data;
+  };
+
+  const deleteResident = async (id) => updateUserStatus(id, 'Disabled');
+
+  const deleteUser = async (id) => {
+    if (session?.user?.role !== 'super_admin') {
+      throw new Error('Only a super admin can delete users.');
+    }
+
+    const targetUser = residents.find((user) => user.id === id);
+
+    if (!targetUser) {
+      throw new Error('User not found.');
+    }
+
+    if (targetUser.role === 'super_admin') {
+      throw new Error('The super admin account cannot be deleted.');
+    }
+
+    const { data, error: deleteError } = await supabase.functions.invoke('delete-user', {
+      body: {
+        user_id: id
+      }
+    });
+
+    if (deleteError) throw deleteError;
+    if (data?.error) throw new Error(data.error);
+
+    setResidents((prevUsers) => prevUsers.filter((user) => user.id !== id));
+
+    await refreshData();
+    return data;
+  };
+
+  const toggleResidentStatus = async (id, targetStatus) => {
+    const user = residents.find((item) => item.id === id);
+    if (!user) throw new Error('User not found.');
+    const nextStatus = targetStatus || (user.status === 'Active' ? 'Disabled' : 'Active');
+    return updateUserStatus(id, nextStatus);
+  };
+
+  const sendNotification = async (residentIds, message) => {
+    if (!session?.user) throw new Error('No authenticated admin session.');
+
+    const cleanMessage = `${message || ''}`.trim();
+    const recipients = Array.isArray(residentIds)
+      ? residentIds.filter(Boolean)
+      : [];
+
+    if (recipients.length === 0) {
+      throw new Error('Please select at least one resident.');
+    }
+
+    if (!cleanMessage) {
+      throw new Error('Please enter a message.');
+    }
+
+    const rows = recipients.map((userId) => ({
+      user_id: userId,
+      title: 'Admin Notification',
+      message: cleanMessage,
+      sent_by: session.user.id
+    }));
+
+    const { data, error: notificationError } = await supabase
+      .from('notifications')
+      .insert(rows)
+      .select('id,user_id,report_id,title,message,is_read,sent_by,created_at');
+
+    if (notificationError) throw notificationError;
+
+    setNotifications((prevNotifications) => [
+      ...(data || []).map(mapNotification),
+      ...prevNotifications
+    ]);
+
+    // Record an admin notification so the admin is notified in the header bell that messages were delivered
+    const recipientCount = recipients.length;
+    const preview = cleanMessage.length > 55 ? `${cleanMessage.slice(0, 52)}...` : cleanMessage;
+    const summaryTitle = 'Message Sent to Residents';
+    const summaryMessage = recipientCount === 1
+      ? `Notification successfully delivered to 1 resident: "${preview}"`
+      : `Notification successfully delivered to all ${recipientCount} selected residents: "${preview}"`;
+
+    try {
+      const { data: adminNotifData, error: adminNotifError } = await supabase
+        .from('admin_notifications')
+        .insert({
+          title: summaryTitle,
+          message: summaryMessage,
+          type: 'broadcast_sent',
+          is_read: false
+        })
+        .select('id,report_id,user_id,title,message,type,is_read,created_at,read_at,read_by')
+        .single();
+
+      if (!adminNotifError && adminNotifData) {
+        setAdminNotifications((prev) => [mapAdminNotification(adminNotifData), ...prev]);
+      } else {
+        await loadAdminNotifications();
+      }
+    } catch {
+      await loadAdminNotifications();
+    }
+
+    return data;
+  };
+
+  const value = {
+    reports,
+    residents,
+    notifications,
+    adminNotifications,
+    hotlines,
+    reportLogs,
+    reportRemarks,
+    session,
+    authLoading,
+    loading,
+    error,
+    refreshData,
+    signIn,
+    signOut,
+    resetPassword,
+    updatePassword,
+    verifyOtpAndResetPassword,
+    updateCurrentProfile,
+    updateReportDetails,
+    markAdminNotificationRead,
+    markAllAdminNotificationsRead,
+    deleteReport,
+    addReportRemark,
+    createUser,
+    addResident,
+    deleteResident,
+    deleteUser,
+    updateUserStatus,
+    toggleResidentStatus,
+    sendNotification,
+    loadHotlines,
+    saveHotline,
+    deleteHotline
+  };
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+}

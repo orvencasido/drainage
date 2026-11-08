@@ -1,0 +1,1251 @@
+import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
+import '../models/drainage_report.dart';
+import '../services/app_service.dart';
+import '../widgets/app_alert_dialog.dart';
+import '../widgets/app_video_player.dart';
+import 'app_header.dart';
+import 'login_screen.dart';
+import 'my_reports_screen.dart';
+import 'map_screen.dart';
+
+enum ReportAttachmentType { photo, video }
+
+class ReportIssueScreen extends StatefulWidget {
+  const ReportIssueScreen({super.key});
+
+  @override
+  State<ReportIssueScreen> createState() => _ReportIssueScreenState();
+}
+
+class _ReportIssueScreenState extends State<ReportIssueScreen> {
+  XFile? _selectedMedia;
+  Uint8List? _selectedPhotoBytes;
+  ReportAttachmentType? _selectedMediaType;
+  String? _selectedIssueType;
+  final _specifyController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  final _picker = ImagePicker();
+  int _charCount = 0;
+  bool _isSubmitting = false;
+  IssueLocation? _selectedLocation;
+
+  final List<String> _issueTypes = [
+    'Clogged Drainage',
+    'Overflowing Canal',
+    'Leaking Pipe',
+    'Slow Water Flow',
+    'Minor Flooding',
+    'Others',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _descriptionController.addListener(() {
+      setState(() {
+        _charCount = _descriptionController.text.length;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _specifyController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickPhoto(ImageSource source) async {
+    try {
+      final pickedFile = await _picker.pickImage(
+        source: source,
+        maxWidth: 1000,
+        maxHeight: 1000,
+        imageQuality: 85,
+      );
+      if (pickedFile != null) {
+        final imageBytes = await pickedFile.readAsBytes();
+        if (!mounted) return;
+        setState(() {
+          _selectedMedia = pickedFile;
+          _selectedPhotoBytes = imageBytes;
+          _selectedMediaType = ReportAttachmentType.photo;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error choosing photo: $e')));
+    }
+  }
+
+  Future<void> _pickVideo(ImageSource source) async {
+    try {
+      final pickedFile = await _picker.pickVideo(
+        source: source,
+        maxDuration: const Duration(minutes: 2),
+      );
+      if (pickedFile != null) {
+        if (!mounted) return;
+        setState(() {
+          _selectedMedia = pickedFile;
+          _selectedPhotoBytes = null;
+          _selectedMediaType = ReportAttachmentType.video;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error choosing video: $e')));
+    }
+  }
+
+  void _showMediaSourcePicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Add Photo or Video',
+                style: GoogleFonts.poppins(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildMediaOption(
+                      icon: Icons.camera_alt_rounded,
+                      label: 'Take Photo',
+                      color: const Color(0xFF2196F3),
+                      backgroundColor: const Color(0xFFEAF4FF),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickPhoto(ImageSource.camera);
+                      },
+                    ),
+                  ),
+                  Expanded(
+                    child: _buildMediaOption(
+                      icon: Icons.videocam_rounded,
+                      label: 'Record Video',
+                      color: const Color(0xFF8B5CF6),
+                      backgroundColor: const Color(0xFFF0E7FF),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickVideo(ImageSource.camera);
+                      },
+                    ),
+                  ),
+                  Expanded(
+                    child: _buildMediaOption(
+                      icon: Icons.photo_library_rounded,
+                      label: 'Upload Photo',
+                      color: const Color(0xFF10B981),
+                      backgroundColor: const Color(0xFFE2FBE9),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickPhoto(ImageSource.gallery);
+                      },
+                    ),
+                  ),
+                  Expanded(
+                    child: _buildMediaOption(
+                      icon: Icons.video_library_rounded,
+                      label: 'Upload Video',
+                      color: const Color(0xFFEF4444),
+                      backgroundColor: const Color(0xFFFFE8E8),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickVideo(ImageSource.gallery);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showSuccessDialog(DrainageReport report) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 58,
+                  height: 58,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF22C55E).withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: Color(0xFF22C55E),
+                    size: 30,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Report Submitted!',
+                  style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                    color: Colors.black,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Thank you! Your report has been successfully submitted.',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.poppins(
+                    color: Colors.black54,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context); // Close dialog
+                      Navigator.pop(context); // Close Report Screen
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const MyReportsScreen(),
+                        ),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2196F3),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Text(
+                      'Go to My Reports',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(context); // Close dialog
+                    Navigator.pop(context); // Close Report Screen
+                  },
+                  child: Text(
+                    'Back to Home',
+                    style: GoogleFonts.poppins(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showFailureDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircleAvatar(
+                  radius: 40,
+                  backgroundColor: Color(0xFFEF4444),
+                  child: Icon(
+                    Icons.priority_high_rounded,
+                    color: Colors.white,
+                    size: 48,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Unable to Submit Report',
+                  style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                    color: Colors.black,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Please check the following issue(s):',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.poppins(
+                    color: Colors.black54,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFCE8E6),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_selectedLocation == null) ...[
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '• ',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Expanded(
+                              child: RichText(
+                                text: TextSpan(
+                                  style: GoogleFonts.poppins(
+                                    color: Colors.black87,
+                                    fontSize: 13,
+                                  ),
+                                  children: [
+                                    TextSpan(
+                                      text: 'Location is required.\n',
+                                      style: GoogleFonts.poppins(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const TextSpan(
+                                      text:
+                                          'Please set the exact location of the drainage issue.',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_selectedIssueType == null ||
+                          (_selectedIssueType == 'Others' &&
+                              _specifyController.text.trim().isEmpty)) ...[
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '• ',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Expanded(
+                              child: RichText(
+                                text: TextSpan(
+                                  style: GoogleFonts.poppins(
+                                    color: Colors.black87,
+                                    fontSize: 13,
+                                  ),
+                                  children: [
+                                    TextSpan(
+                                      text: 'Issue type is required.\n',
+                                      style: GoogleFonts.poppins(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    TextSpan(
+                                      text: _selectedIssueType == 'Others'
+                                          ? 'Please specify the issue type.'
+                                          : 'Please select the issue type for your report.',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_descriptionController.text.trim().isEmpty) ...[
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '• ',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Expanded(
+                              child: RichText(
+                                text: TextSpan(
+                                  style: GoogleFonts.poppins(
+                                    color: Colors.black87,
+                                    fontSize: 13,
+                                  ),
+                                  children: [
+                                    TextSpan(
+                                      text: 'Description is required.\n',
+                                      style: GoogleFonts.poppins(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const TextSpan(
+                                      text:
+                                          'Please enter a description for your report.',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_selectedMedia == null) ...[
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '• ',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Expanded(
+                              child: RichText(
+                                text: TextSpan(
+                                  style: GoogleFonts.poppins(
+                                    color: Colors.black87,
+                                    fontSize: 13,
+                                  ),
+                                  children: [
+                                    TextSpan(
+                                      text: 'Photo or video is required.\n',
+                                      style: GoogleFonts.poppins(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const TextSpan(
+                                      text:
+                                          'Please add a photo or video to your current report.',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context); // Close dialog
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2196F3),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Text(
+                      'Edit Report',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(context); // Close dialog
+                    Navigator.pop(context); // Close Report Screen
+                  },
+                  child: Text(
+                    'Go to Dashboard',
+                    style: GoogleFonts.poppins(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _handleSubmit() async {
+    final hasIssueType =
+        _selectedIssueType != null &&
+        (_selectedIssueType != 'Others' ||
+            _specifyController.text.trim().isNotEmpty);
+
+    if (_selectedMedia == null ||
+        !hasIssueType ||
+        _descriptionController.text.trim().isEmpty ||
+        _selectedLocation == null) {
+      _showFailureDialog();
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    try {
+      final titleText = _selectedIssueType == 'Others'
+          ? _specifyController.text.trim()
+          : _selectedIssueType!;
+
+      final report = await AppService.submitReport(
+        media: _selectedMedia!,
+        location: _selectedLocation!,
+        title: titleText,
+        description: _descriptionController.text.trim(),
+      );
+      if (!mounted) return;
+      _showSuccessDialog(report);
+    } catch (error) {
+      if (!mounted) return;
+      final errorStr = error.toString().toLowerCase();
+      final friendlyMsg = AppService.friendlyErrorMessage(
+        error,
+        fallback: 'Unable to submit your report. Please try again.',
+      );
+      final isDisabled = errorStr.contains('disabled') ||
+          errorStr.contains('user unavailable') ||
+          errorStr.contains('storageexception') ||
+          friendlyMsg.toLowerCase().contains('disabled') ||
+          friendlyMsg.toLowerCase().contains('user unavailable');
+
+      if (isDisabled) {
+        await showAppAlertDialog(
+          context: context,
+          title: 'User Unavailable',
+          message: 'User unavailable. Account disabled by admin.',
+          icon: Icons.block_rounded,
+          color: const Color(0xFFEF4444),
+        );
+        await AppService.signOut();
+        if (!mounted) return;
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (route) => false,
+        );
+        return;
+      }
+
+      await showAppAlertDialog(
+        context: context,
+        title: 'Unable to Submit Report',
+        message: friendlyMsg,
+        icon: Icons.error_outline_rounded,
+        color: const Color(0xFFEF4444),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
+  Widget _buildSelectedMedia() {
+    if (_selectedMediaType == ReportAttachmentType.video) {
+      final mediaPath = _selectedMedia?.path;
+      if (mediaPath != null && mediaPath.isNotEmpty) {
+        return AppVideoPlayer(
+          videoPath: mediaPath,
+          height: double.infinity,
+          autoPlay: false,
+        );
+      }
+      return Container(
+        color: const Color(0xFFEAF2FF),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.play_circle_fill_rounded,
+              color: Color(0xFF2196F3),
+              size: 58,
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Text(
+                _selectedMedia?.name ?? 'Selected video',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.poppins(
+                  color: Colors.black87,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final imageBytes = _selectedPhotoBytes;
+    if (imageBytes == null) return const SizedBox.shrink();
+
+    return Image.memory(imageBytes, fit: BoxFit.cover, gaplessPlayback: true);
+  }
+
+  Widget _buildMediaOption({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required Color backgroundColor,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6.0, horizontal: 2.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircleAvatar(
+              radius: 26,
+              backgroundColor: backgroundColor,
+              child: Icon(icon, color: color, size: 26),
+            ),
+            const SizedBox(height: 8),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                label,
+                maxLines: 1,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String number, String title) {
+    return Row(
+      children: [
+        Container(
+          width: 26,
+          height: 26,
+          decoration: const BoxDecoration(
+            color: Color(0xFF2196F3),
+            shape: BoxShape.circle,
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            number,
+            style: GoogleFonts.poppins(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            style: GoogleFonts.poppins(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Colors.black,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF2196F3), // Blue top background
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            const AppHeader(title: 'Report a Drainage Issue'),
+
+            // White Content Body
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                clipBehavior: Clip.antiAlias,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFF3F7FA), // Soft light background
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(32),
+                    topRight: Radius.circular(32),
+                  ),
+                ),
+                child: SingleChildScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Section 1: Take/Upload Media
+                      _buildSectionHeader('1', 'Take / Upload Photo or Video'),
+                      const SizedBox(height: 12),
+
+                      // Dashed Area (or Display Captured Image)
+                      GestureDetector(
+                        onTap: _showMediaSourcePicker,
+                        child: Container(
+                          width: double.infinity,
+                          height: 180,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(16),
+                            child: _selectedMedia != null
+                                ? Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      _buildSelectedMedia(),
+                                      // Retake Overlay badge
+                                      Positioned(
+                                        right: 12,
+                                        bottom: 12,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 6,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black.withValues(
+                                              alpha: 0.6,
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              20,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(
+                                                Icons.refresh_rounded,
+                                                color: Colors.white,
+                                                size: 16,
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                'Change',
+                                                style: GoogleFonts.poppins(
+                                                  color: Colors.white,
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : CustomPaint(
+                                    painter: DashedBorderPainter(
+                                      color: Colors.black38,
+                                    ),
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        // Custom camera and click design
+                                        Stack(
+                                          alignment: Alignment.center,
+                                          children: [
+                                            const Icon(
+                                              Icons.perm_media_rounded,
+                                              size: 52,
+                                              color: Colors.black,
+                                            ),
+                                            // Click illustration circle overlap
+                                            Transform.translate(
+                                              offset: const Offset(36, 6),
+                                              child: Container(
+                                                width: 32,
+                                                height: 32,
+                                                decoration: BoxDecoration(
+                                                  color: const Color(
+                                                    0x3338B6FF,
+                                                  ),
+                                                  shape: BoxShape.circle,
+                                                  border: Border.all(
+                                                    color: const Color(
+                                                      0xFF2196F3,
+                                                    ),
+                                                    width: 1.5,
+                                                  ),
+                                                ),
+                                                child: const Icon(
+                                                  Icons.touch_app_rounded,
+                                                  size: 18,
+                                                  color: Colors.black,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 16),
+                                        Text(
+                                          'Tap to take or upload\na photo or video',
+                                          textAlign: TextAlign.center,
+                                          style: GoogleFonts.poppins(
+                                            color: Colors.black54,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // Section 2: Select Location
+                      _buildSectionHeader('2', 'Select Location'),
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: () async {
+                          final result = await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const MapScreen(),
+                            ),
+                          );
+                          if (result is IssueLocation && mounted) {
+                            setState(() {
+                              _selectedLocation = result;
+                            });
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 14,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.04),
+                                blurRadius: 10,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.location_on_rounded,
+                                color: Color(0xFFEF4444),
+                                size: 26,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  _selectedLocation?.label ??
+                                      'Tap to set location',
+                                  style: GoogleFonts.poppins(
+                                    color: Colors.black87,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              const Icon(
+                                Icons.chevron_right_rounded,
+                                color: Colors.black54,
+                                size: 26,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // Section 3: Select Issue Type
+                      _buildSectionHeader('3', 'Select Issue Type'),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 16,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.04),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Please select the issue type',
+                              style: GoogleFonts.poppins(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black54,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            ..._issueTypes.map((type) {
+                              final isSelected = _selectedIssueType == type;
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        _selectedIssueType = type;
+                                      });
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 8.0,
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            isSelected
+                                                ? Icons
+                                                      .radio_button_checked_rounded
+                                                : Icons
+                                                      .radio_button_off_rounded,
+                                            color: isSelected
+                                                ? const Color(0xFF2196F3)
+                                                : Colors.black38,
+                                            size: 22,
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Text(
+                                            type,
+                                            style: GoogleFonts.poppins(
+                                              fontSize: 14,
+                                              fontWeight: isSelected
+                                                  ? FontWeight.bold
+                                                  : FontWeight.w500,
+                                              color: isSelected
+                                                  ? Colors.black
+                                                  : Colors.black87,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  if (type == 'Others') ...[
+                                    const SizedBox(height: 4),
+                                    Padding(
+                                      padding: const EdgeInsets.only(
+                                        left: 34.0,
+                                      ),
+                                      child: TextField(
+                                        controller: _specifyController,
+                                        onTap: () {
+                                          if (_selectedIssueType != 'Others') {
+                                            setState(() {
+                                              _selectedIssueType = 'Others';
+                                            });
+                                          }
+                                        },
+                                        decoration: InputDecoration(
+                                          hintText: 'Please specify...',
+                                          hintStyle: GoogleFonts.poppins(
+                                            color: Colors.black38,
+                                            fontSize: 13,
+                                          ),
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                horizontal: 16,
+                                                vertical: 10,
+                                              ),
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                            borderSide: const BorderSide(
+                                              color: Colors.black12,
+                                            ),
+                                          ),
+                                          enabledBorder: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                            borderSide: const BorderSide(
+                                              color: Colors.black12,
+                                            ),
+                                          ),
+                                          focusedBorder: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                            borderSide: const BorderSide(
+                                              color: Color(0xFF2196F3),
+                                            ),
+                                          ),
+                                        ),
+                                        style: GoogleFonts.poppins(
+                                          fontSize: 13,
+                                          color: Colors.black87,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                  ],
+                                ],
+                              );
+                            }),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // Section 4: Additional Description
+                      _buildSectionHeader(
+                        '4',
+                        'Additional Description',
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.04),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            TextField(
+                              controller: _descriptionController,
+                              maxLines: 4,
+                              maxLength: 500,
+                              decoration: InputDecoration(
+                                hintText:
+                                    'Type more details about the issue...',
+                                hintStyle: const TextStyle(
+                                  color: Colors.black38,
+                                  fontSize: 13,
+                                ),
+                                prefixIcon: const Padding(
+                                  padding: EdgeInsets.only(bottom: 50.0),
+                                  child: Icon(
+                                    Icons.edit_outlined,
+                                    color: Colors.black38,
+                                    size: 20,
+                                  ),
+                                ),
+                                border: InputBorder.none,
+                                counterText: '',
+                              ),
+                              style: GoogleFonts.poppins(
+                                fontSize: 13,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            Align(
+                              alignment: Alignment.bottomRight,
+                              child: Text(
+                                '$_charCount/500',
+                                style: GoogleFonts.poppins(
+                                  color: Colors.black38,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+
+                      // Submit Button
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _isSubmitting ? null : _handleSubmit,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF2196F3),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shadowColor: Colors.transparent,
+                            padding: const EdgeInsets.symmetric(vertical: 16.0),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: _isSubmitting
+                              ? const SizedBox(
+                                  height: 22,
+                                  width: 22,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2.5,
+                                  ),
+                                )
+                              : Text(
+                                  'Submit Report',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.8,
+                                  ),
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Custom Painter for drawing a dashed rectangle border
+class DashedBorderPainter extends CustomPainter {
+  final Color color;
+  final double strokeWidth;
+  final double gap;
+  final double dash;
+
+  DashedBorderPainter({
+    required this.color,
+    this.strokeWidth = 1.5,
+    this.gap = 5.0,
+    this.dash = 8.0,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = strokeWidth
+      ..style = PaintingStyle.stroke;
+
+    final path = Path();
+    path.addRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, size.width, size.height),
+        const Radius.circular(16),
+      ),
+    );
+
+    // Dash algorithm
+    final Path dashPath = Path();
+    double distance = 0.0;
+    for (final measurePath in path.computeMetrics()) {
+      while (distance < measurePath.length) {
+        final double len = dash;
+        dashPath.addPath(
+          measurePath.extractPath(distance, distance + len),
+          Offset.zero,
+        );
+        distance += len + gap;
+      }
+      distance = 0.0;
+    }
+
+    canvas.drawPath(dashPath, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
