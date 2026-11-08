@@ -110,7 +110,10 @@ rclone_ci.conf.b64
 **/ios/ServiceDefinitions.json
 **/ios/Runner/GoogleService-Info.plist
 
-# --- Large Raw Media Files in new-automations ---
+# --- Report Photos & Large Media Assets ---
+/assets/
+assets/PICTURES/
+assets/VIDEOS/
 new-automations/PICTURES/
 new-automations/VIDEOS/
 
